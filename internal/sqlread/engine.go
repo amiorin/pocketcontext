@@ -42,6 +42,9 @@ type Result struct {
 // ErrBusy wraps transient SQLite busy or locked errors. Callers should retry.
 var ErrBusy = errors.New("database busy")
 
+// ErrNotReadOnly rejects statements that sqlite3_stmt_readonly does not report as read-only.
+var ErrNotReadOnly = errors.New("statement is not read-only")
+
 type Engine struct {
 	db     *sql.DB
 	cfg    Config
@@ -53,8 +56,36 @@ type connector struct {
 	dsn    string
 }
 
-func (c connector) Connect(context.Context) (driver.Conn, error) { return c.driver.Open(c.dsn) }
-func (c connector) Driver() driver.Driver                        { return c.driver }
+func (c connector) Connect(context.Context) (driver.Conn, error) {
+	conn, err := c.driver.Open(c.dsn)
+	if err != nil {
+		return nil, err
+	}
+	return roConn{conn.(*sqlite3.SQLiteConn)}, nil
+}
+func (c connector) Driver() driver.Driver { return c.driver }
+
+// roConn exposes only prepare, so database/sql cannot bypass the read-only
+// check. The check runs on the prepared statement itself, before any step.
+type roConn struct{ c *sqlite3.SQLiteConn }
+
+func (r roConn) Close() error                   { return r.c.Close() }
+func (r roConn) Ping(ctx context.Context) error { return r.c.Ping(ctx) }
+func (r roConn) Begin() (driver.Tx, error)      { return nil, errors.New("transactions are not supported") }
+func (r roConn) Prepare(query string) (driver.Stmt, error) {
+	return r.PrepareContext(context.Background(), query)
+}
+func (r roConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	stmt, err := r.c.PrepareContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if s, ok := stmt.(*sqlite3.SQLiteStmt); !ok || !s.Readonly() {
+		stmt.Close()
+		return nil, ErrNotReadOnly
+	}
+	return stmt, nil
+}
 
 // New opens an independent read-only connection. Tables must be ordinary tables;
 // views, virtual tables and internal names are rejected. An empty column list

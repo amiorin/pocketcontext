@@ -151,3 +151,19 @@ func TestRejectUnsafeTableConfiguration(t *testing.T) {
 		})
 	}
 }
+func TestNonReadOnlyStatementRejectedOverHTTP(t *testing.T) {
+	app, token, _ := fixture(t)
+	h, err := startRouter(t, app, map[string][]string{"deals": {"id", "title"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "copy.db")
+	body, _ := json.Marshal(map[string]string{"sql": "VACUUM INTO '" + out + "'"})
+	r := request(h, "POST", "/api/context/query", token, string(body))
+	if r.Code != http.StatusBadRequest || !strings.Contains(r.Body.String(), `"message":"SQL query rejected: statement is not read-only."`) {
+		t.Fatalf("VACUUM INTO: %d %s", r.Code, r.Body)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatalf("VACUUM INTO wrote %s: %v", out, err)
+	}
+}
