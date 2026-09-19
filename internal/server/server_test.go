@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/amiorin/pocketcontext/internal/database"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tests"
+	"github.com/pocketcontext/pocketcontext/internal/database"
 )
 
 func fixture(t *testing.T) (*tests.TestApp, string, string) {

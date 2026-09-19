@@ -1,4 +1,4 @@
-module github.com/amiorin/pocketcontext
+module github.com/pocketcontext/pocketcontext
 
 go 1.27.1
 

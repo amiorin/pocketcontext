@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/amiorin/pocketcontext/internal/sqlread"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketcontext/pocketcontext/internal/sqlread"
 )
 
 type Config struct {

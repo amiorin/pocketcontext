@@ -5,11 +5,11 @@ import (
 	"log"
 	"os"
 
-	"github.com/amiorin/pocketcontext/internal/database"
-	"github.com/amiorin/pocketcontext/internal/server"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/plugins/jsvm"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
+	"github.com/pocketcontext/pocketcontext/internal/database"
+	"github.com/pocketcontext/pocketcontext/internal/server"
 	"github.com/spf13/pflag"
 )
 
