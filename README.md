@@ -6,7 +6,7 @@ The server embeds PocketBase v0.40.4. A separate read-only SQLite connection exe
 
 ## Build
 
-You need Go 1.27 or later and a C compiler. The SQL reader uses `github.com/mattn/go-sqlite3` for its SQLite authorizer. PocketBase's write connections use the same SQLite library to share its process-local locking state. Agent reads use separate connections opened read-only.
+You need Go 1.27 or later and a C compiler. The SQL reader uses `github.com/mattn/go-sqlite3` for its SQLite authorizer. PocketBase's write connections use the same SQLite library to share its process-local locking state. Agent reads use separate connections opened read-only. Build and test with the `sqlite_math_functions` tag, as the Makefile does; without it SQLite lacks math functions such as `sqrt` and `ceil`, so `go test ./...` fails.
 
 ```sh
 make test

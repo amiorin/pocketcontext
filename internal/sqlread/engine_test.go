@@ -43,6 +43,8 @@ func TestReads(t *testing.T) {
 		`SELECT count(*) FROM people`,
 		`SELECT ';', 'it''s;fine', 1 AS "semi;colon"; -- comment`,
 		`SELECT value, row_number() OVER (ORDER BY value) FROM deals`,
+		`SELECT sqrt(4), ceil(1.5), pow(2,3), mod(5,2)`,
+		`SELECT '{"a":1}' ->> '$.a'`,
 	} {
 		t.Run(query, func(t *testing.T) {
 			r, err := e.Query(ctx, query)

@@ -293,7 +293,7 @@ func (r Result) CSV() ([]byte, error) {
 
 var safeFunctions = func() map[string]bool {
 	m := map[string]bool{}
-	for _, s := range strings.Fields(`abs avg ceiling ceil char coalesce concat concat_ws count date datetime exp floor format glob group_concat hex ifnull iif instr json json_array json_array_length json_extract json_group_array json_group_object json_object json_quote json_type json_valid julianday length like ln log log10 log2 lower ltrim max min mod nullif octet_length pi pow power printf quote replace round rtrim sign sqrt strftime string_agg substr substring sum time timediff total trim typeof unicode unixepoch upper row_number rank dense_rank percent_rank cume_dist ntile lag lead first_value last_value nth_value`) {
+	for _, s := range strings.Fields(`abs avg ceiling ceil char coalesce concat concat_ws count date datetime exp floor format glob group_concat hex ifnull iif instr json json_array json_array_length json_extract json_group_array json_group_object json_object json_quote json_type json_valid julianday length like ln log log10 log2 lower ltrim max min mod nullif octet_length pi pow power printf quote replace round rtrim sign sqrt strftime string_agg substr substring sum time timediff total trim typeof unicode unixepoch upper row_number rank dense_rank percent_rank cume_dist ntile lag lead first_value last_value nth_value -> ->>`) {
 		m[s] = true
 	}
 	return m
