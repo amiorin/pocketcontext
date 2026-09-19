@@ -1,0 +1,4 @@
+/bin/
+/pb_data/
+.env
+*.log

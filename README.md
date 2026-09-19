@@ -1,0 +1,76 @@
+# PocketContext
+
+PocketContext lets coding agents query application data with SQL. All writes use PocketBase's standard REST API.
+
+The server embeds PocketBase v0.40.4. A separate read-only SQLite connection executes agent queries against the same database. No replication process is required. PocketContext has no application frontend. PocketBase's built-in administration dashboard remains available for server administration.
+
+## Build
+
+You need Go 1.27 or later and a C compiler. The SQL reader uses `github.com/mattn/go-sqlite3` for its SQLite authorizer. PocketBase's write connections use the same SQLite library to share its process-local locking state. Agent reads use separate connections opened read-only.
+
+```sh
+make test
+make build
+```
+
+## Run an application
+
+Applications own `pb_migrations`, optional `pb_hooks`, and `pocketcontext.json`. DealContext is the first application, at `https://github.com/amiorin/dealcontext`.
+
+From the application directory:
+
+```sh
+../pocketcontext/bin/pocketcontext migrate up --dir ./pb_data
+../pocketcontext/bin/pocketcontext serve --dir ./pb_data --http 127.0.0.1:8090
+```
+
+Migrations and hooks default to `./pb_migrations` and `./pb_hooks`. Override them with `--migrationsDir` and `--hooksDir`. Set `--contextConfig` to use a configuration outside the working directory. `migrate` and `superuser` commands do not require SQL configuration. Keep the database on local disk and bind to localhost unless you configure network access and TLS.
+
+Example configuration:
+
+```json
+{
+  "authCollection": "agents",
+  "tables": {
+    "documents": ["id", "title", "body", "created"],
+    "decisions": []
+  },
+  "timeoutMs": 2000,
+  "maxRows": 500,
+  "maxBytes": 1048576
+}
+```
+
+An empty column list exposes the collection's current nonhidden columns. The server rejects that shortcut when a collection contains hidden fields. Explicit column lists provide a more stable contract. Configuration can expose only non-system base collections. Restart the server after schema or permission changes. Schema discovery describes the columns authorized at startup.
+
+Create the application's auth collection in a migration. Provision accounts through an administrator, then authenticate through PocketBase's normal `auth-with-password` endpoint. SQL routes accept tokens only from the configured collection, including no special bypass for superuser tokens.
+
+## Read with SQL
+
+```sh
+curl -sS http://127.0.0.1:8090/api/context/schema \
+  -H "Authorization: $POCKETCONTEXT_TOKEN"
+
+curl -sS http://127.0.0.1:8090/api/context/query \
+  -H "Authorization: $POCKETCONTEXT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"sql":"SELECT id, title FROM documents ORDER BY created DESC LIMIT 20"}'
+```
+
+JSON responses contain `columns`, positional `rows`, and `truncated`. Request `"format":"csv"` for CSV. Both formats return `X-Context-Truncated`. A truncated response is incomplete. Narrow the query or request another page using a stable ordering. CSV represents NULL as an empty field; use JSON when that distinction matters.
+
+The reader supports joins, aggregates, CTEs, and common SQLite functions. It accepts one statement, with an optional trailing semicolon. It denies writes, schema changes, transactions, PRAGMAs, attachments, metadata reads, and functions outside its allowlist. Views and virtual tables are not currently configurable; query the allowed base tables with joins or CTEs. SQLite can omit database identity in authorization callbacks for `COUNT(*)` over a CTE, so the reader may reject that form. Use `COUNT(cte.column)` when the column is non-null, or aggregate from the base table.
+
+The default limits are two seconds, 500 rows, and 1 MiB of encoded results. The HTTP request limit is 64 KiB. The reader also limits SQLite scalar allocation sizes. Queries that exceed a row or accumulated result limit return partial results with `truncated: true`. Oversized SQLite values and invalid or unauthorized SQL return 400. Expired query deadlines return 408. CSV or JSON encoding that exceeds the final response cap returns 413.
+
+## Write through PocketBase
+
+Use `/api/collections/{collection}/records` to create records and `/api/collections/{collection}/records/{id}` to update or delete them. PocketBase applies its collection rules, validation, and hooks. The SQL endpoint cannot perform these operations.
+
+## Permission model
+
+This release targets one shared workspace. Every account in `authCollection` can query every configured column. SQL reads do not inherit PocketBase's per-record API rules. Do not use this setup for accounts that must see different rows in the same configured table.
+
+Keep config and schema changes under administrative control. SQL authorization captures the configured columns at startup; restart after changing hidden fields or collection definitions. Row limits and timeouts constrain individual queries, not aggregate traffic. Put traffic controls in front of the service when exposing it to a network.
+
+`pb_data` contains application data and credentials and must stay outside Git. PocketBase remains pre-1.0, so review upstream migration notes before upgrading. Back up the application before upgrades and test restores.
