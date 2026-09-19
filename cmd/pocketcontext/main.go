@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/plugins/jsvm"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
+	"github.com/spf13/pflag"
 )
 
 func main() {
@@ -17,7 +19,7 @@ func main() {
 	app.RootCmd.PersistentFlags().StringVar(&configPath, "contextConfig", "pocketcontext.json", "SQL read configuration file")
 	app.RootCmd.PersistentFlags().StringVar(&hooksDir, "hooksDir", "pb_hooks", "application JavaScript hooks directory")
 	app.RootCmd.PersistentFlags().StringVar(&migrationsDir, "migrationsDir", "pb_migrations", "application JavaScript migrations directory")
-	if err := app.RootCmd.ParseFlags(os.Args[1:]); err != nil {
+	if err := app.RootCmd.ParseFlags(os.Args[1:]); err != nil && !errors.Is(err, pflag.ErrHelp) {
 		log.Fatal(err)
 	}
 	jsvm.MustRegister(app, jsvm.Config{HooksDir: hooksDir, MigrationsDir: migrationsDir, HooksWatch: false})
