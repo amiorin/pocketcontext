@@ -61,7 +61,9 @@ JSON responses contain `columns`, positional `rows`, and `truncated`. Request `"
 
 The reader supports joins, aggregates, CTEs, and common SQLite functions. It accepts one statement, with an optional trailing semicolon. It denies writes, schema changes, transactions, PRAGMAs, attachments, metadata reads, and functions outside its allowlist. Views and virtual tables are not currently configurable; query the allowed base tables with joins or CTEs. SQLite can omit database identity in authorization callbacks for `COUNT(*)` over a CTE, so the reader may reject that form. Use `COUNT(cte.column)` when the column is non-null, or aggregate from the base table.
 
-The default limits are two seconds, 500 rows, and 1 MiB of encoded results. The HTTP request limit is 64 KiB. The reader also limits SQLite scalar allocation sizes. Queries that exceed a row or accumulated result limit return partial results with `truncated: true`. Oversized SQLite values and invalid or unauthorized SQL return 400. Expired query deadlines return 408. CSV or JSON encoding that exceeds the final response cap returns 413.
+The default limits are two seconds, 500 rows, and 1 MiB of encoded results. The HTTP request limit is 64 KiB. The reader also limits SQLite scalar allocation sizes and caps SQLite heap use per connection at 256 MiB. Queries that exceed a row or accumulated result limit return partial results with `truncated: true`. Oversized SQLite values and invalid or unauthorized SQL return 400. Expired query deadlines return 408. CSV or JSON encoding that exceeds the final response cap returns 413. A busy database returns 503 with `Retry-After`; retry the same query.
+
+The reader uses at most four connections. Additional concurrent queries wait for a connection and return 408 if none becomes free before the deadline. `EXPLAIN` and `EXPLAIN QUERY PLAN` are permitted for allowed tables and reveal index names and page numbers, not data.
 
 ## Write through PocketBase
 
@@ -71,6 +73,6 @@ Use `/api/collections/{collection}/records` to create records and `/api/collecti
 
 This release targets one shared workspace. Every account in `authCollection` can query every configured column. SQL reads do not inherit PocketBase's per-record API rules. Do not use this setup for accounts that must see different rows in the same configured table.
 
-Keep config and schema changes under administrative control. SQL authorization captures the configured columns at startup; restart after changing hidden fields or collection definitions. Row limits and timeouts constrain individual queries, not aggregate traffic. Put traffic controls in front of the service when exposing it to a network.
+Keep config and schema changes under administrative control. SQL authorization captures the configured columns at startup; restart after changing hidden fields or collection definitions. Renaming a collection and creating a new one with the old name keeps the old column allowlist for that name until restart. Error messages distinguish unknown columns from unauthorized ones, so agents can discover the names of hidden fields and unexposed tables, but not their contents. Row limits and timeouts constrain individual queries, not aggregate traffic. Put traffic controls in front of the service when exposing it to a network. Every query is written to the PocketBase log with the agent record id, duration, row count, and SQL text; failed queries log at warning level.
 
 `pb_data` contains application data and credentials and must stay outside Git. PocketBase remains pre-1.0, so review upstream migration notes before upgrading. Back up the application before upgrades and test restores.
