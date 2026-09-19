@@ -15,7 +15,7 @@ make build
 
 ## Run an application
 
-Applications own `pb_migrations`, optional `pb_hooks`, and `pocketcontext.json`. DealContext is the first application, at `https://github.com/amiorin/dealcontext`.
+Applications own `pb_migrations`, optional `pb_hooks`, and `pocketcontext.json`. DealContext is the first application, at `https://github.com/pocketcontext/dealcontext`.
 
 From the application directory:
 
