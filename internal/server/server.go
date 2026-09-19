@@ -114,10 +114,16 @@ func Register(app core.App, configPath string) {
 			if body.Format != "" && body.Format != "json" && body.Format != "csv" {
 				return re.BadRequestError("format must be json or csv", nil)
 			}
+			started := time.Now()
 			result, err := engine.Query(re.Request.Context(), body.SQL)
+			logSQL(app, re, body.SQL, body.Format, started, result, err)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					return re.JSON(http.StatusRequestTimeout, map[string]string{"message": "SQL deadline exceeded"})
+				}
+				if errors.Is(err, sqlread.ErrBusy) {
+					re.Response.Header().Set("Retry-After", "1")
+					return re.JSON(http.StatusServiceUnavailable, map[string]string{"message": "Database busy; retry the query"})
 				}
 				return re.BadRequestError("SQL query rejected: "+err.Error(), nil)
 			}
@@ -144,4 +150,30 @@ func Register(app core.App, configPath string) {
 		}
 		return nil
 	})
+}
+
+// logSQL writes one audit line per query with the agent identity and the SQL text.
+func logSQL(app core.App, re *core.RequestEvent, sql, format string, started time.Time, result sqlread.Result, err error) {
+	if format == "" {
+		format = "json"
+	}
+	text := sql
+	if runes := []rune(text); len(runes) > 2000 {
+		text = string(runes[:2000])
+	}
+	attrs := []any{
+		"auth", re.Auth.Id,
+		"collection", re.Auth.Collection().Name,
+		"durationMs", time.Since(started).Milliseconds(),
+		"rows", len(result.Rows),
+		"truncated", result.Truncated,
+		"format", format,
+		"sqlBytes", len(sql),
+		"sql", text,
+	}
+	if err != nil {
+		app.Logger().Warn("context sql", append(attrs, "error", err.Error())...)
+		return
+	}
+	app.Logger().Info("context sql", attrs...)
 }

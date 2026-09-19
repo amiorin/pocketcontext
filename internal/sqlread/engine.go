@@ -38,6 +38,10 @@ type Result struct {
 	Rows      [][]any  `json:"rows"`
 	Truncated bool     `json:"truncated"`
 }
+
+// ErrBusy wraps transient SQLite busy or locked errors. Callers should retry.
+var ErrBusy = errors.New("database busy")
+
 type Engine struct {
 	db     *sql.DB
 	cfg    Config
@@ -78,7 +82,7 @@ func New(path string, cfg Config) (*Engine, error) {
 	u := url.URL{Scheme: "file", Path: abs}
 	q := u.Query()
 	q.Set("mode", "ro")
-	q.Set("_busy_timeout", "100")
+	q.Set("_busy_timeout", "2000")
 	u.RawQuery = q.Encode()
 	setup, err := sql.Open("sqlite3", u.String())
 	if err != nil {
@@ -139,6 +143,9 @@ func New(path string, cfg Config) (*Engine, error) {
 	}
 	sort.Slice(e.tables, func(i, j int) bool { return e.tables[i].Name < e.tables[j].Name })
 	d := &sqlite3.SQLiteDriver{ConnectHook: func(c *sqlite3.SQLiteConn) error {
+		if _, err := c.Exec("PRAGMA query_only = 1; PRAGMA hard_heap_limit = 268435456;", nil); err != nil {
+			return err
+		}
 		c.SetLimit(sqlite3.SQLITE_LIMIT_LENGTH, cfg.MaxBytes)
 		c.SetLimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, 65536)
 		c.SetLimit(sqlite3.SQLITE_LIMIT_COLUMN, 256)
@@ -173,7 +180,16 @@ func New(path string, cfg Config) (*Engine, error) {
 	}
 	return e, nil
 }
-func quote(s string) string    { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+func quote(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+
+// classify wraps busy and locked SQLite errors with ErrBusy.
+func classify(err error) error {
+	var se sqlite3.Error
+	if errors.As(err, &se) && (se.Code == sqlite3.ErrBusy || se.Code == sqlite3.ErrLocked) {
+		return fmt.Errorf("%w: %v", ErrBusy, err)
+	}
+	return err
+}
 func (e *Engine) Close() error { return e.db.Close() }
 func (e *Engine) Schema(ctx context.Context) ([]Table, error) {
 	if err := ctx.Err(); err != nil {
@@ -200,7 +216,7 @@ func (e *Engine) Query(ctx context.Context, query string) (Result, error) {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
-		return result, err
+		return result, classify(err)
 	}
 	defer stmt.Close()
 	rows, err := stmt.QueryContext(ctx)
@@ -208,7 +224,7 @@ func (e *Engine) Query(ctx context.Context, query string) (Result, error) {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
-		return result, err
+		return result, classify(err)
 	}
 	defer rows.Close()
 	result.Columns, err = rows.Columns()
@@ -237,7 +253,7 @@ func (e *Engine) Query(ctx context.Context, query string) (Result, error) {
 			if ctx.Err() != nil {
 				return Result{}, ctx.Err()
 			}
-			return Result{}, err
+			return Result{}, classify(err)
 		}
 		encoded, err := json.Marshal(row)
 		if err != nil {
@@ -258,7 +274,7 @@ func (e *Engine) Query(ctx context.Context, query string) (Result, error) {
 		return Result{}, err
 	}
 	if err = rows.Err(); err != nil {
-		return Result{}, err
+		return Result{}, classify(err)
 	}
 	return result, nil
 }
