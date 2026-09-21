@@ -55,6 +55,11 @@ func fixture(t *testing.T) (*tests.TestApp, string, string) {
 func startRouter(t *testing.T, app *tests.TestApp, tables map[string][]string) (http.Handler, error) {
 	t.Helper()
 	cfg := Config{AuthCollection: "agents", Tables: tables, TimeoutMS: 1000, MaxRows: 100, MaxBytes: 4096}
+	return startConfiguredRouter(t, app, cfg)
+}
+
+func startConfiguredRouter(t *testing.T, app *tests.TestApp, cfg Config) (http.Handler, error) {
+	t.Helper()
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -112,9 +117,15 @@ func TestBaaSWritesAndSQLReads(t *testing.T) {
 	if schema.Code != 200 || !strings.Contains(schema.Body.String(), `"title"`) || strings.Contains(schema.Body.String(), "secret") {
 		t.Fatalf("schema: %d %s", schema.Code, schema.Body)
 	}
+	if !strings.Contains(schema.Body.String(), `"permissionModel":"shared"`) || strings.Contains(schema.Body.String(), "snapshotLimits") || schema.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("shared schema metadata: %s %v", schema.Body, schema.Header())
+	}
 	query := request(h, "POST", "/api/context/query", token, `{"sql":"SELECT title FROM deals"}`)
 	if query.Code != 200 || !strings.Contains(query.Body.String(), "Acme renewal") {
 		t.Fatalf("SQL: %d %s", query.Code, query.Body)
+	}
+	if query.Header().Get("X-Context-Scope") != "" || query.Header().Get("X-Context-Snapshot-At") != "" {
+		t.Fatal("shared response incorrectly marked as snapshot")
 	}
 	csv := request(h, "POST", "/api/context/query", token, `{"sql":"SELECT title FROM deals","format":"csv"}`)
 	if csv.Code != 200 || csv.Body.String() != "title\nAcme renewal\n" || csv.Header().Get("X-Context-Truncated") != "false" {

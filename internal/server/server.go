@@ -20,11 +20,12 @@ import (
 )
 
 type Config struct {
-	AuthCollection string              `json:"authCollection"`
-	Tables         map[string][]string `json:"tables"`
-	TimeoutMS      int                 `json:"timeoutMs"`
-	MaxRows        int                 `json:"maxRows"`
-	MaxBytes       int                 `json:"maxBytes"`
+	AuthCollection string                  `json:"authCollection"`
+	Tables         map[string][]string     `json:"tables"`
+	TimeoutMS      int                     `json:"timeoutMs"`
+	MaxRows        int                     `json:"maxRows"`
+	MaxBytes       int                     `json:"maxBytes"`
+	Snapshot       *sqlread.SnapshotConfig `json:"snapshot,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -50,6 +51,24 @@ func LoadConfig(path string) (Config, error) {
 	if c.TimeoutMS < 1 || c.TimeoutMS > 30000 || c.MaxRows < 1 || c.MaxRows > 10000 || c.MaxBytes < 1024 || c.MaxBytes > 10485760 {
 		return c, fmt.Errorf("limits must be: timeoutMs 1..30000, maxRows 1..10000, maxBytes 1024..10485760")
 	}
+	if c.Snapshot != nil {
+		if err := sqlread.NormalizeSnapshotConfig(c.Snapshot); err != nil {
+			return c, err
+		}
+		if len(c.Snapshot.Filters) != len(c.Tables) {
+			return c, fmt.Errorf("snapshot filters must match output tables")
+		}
+		for name, columns := range c.Tables {
+			if len(columns) == 0 || strings.TrimSpace(c.Snapshot.Filters[name]) == "" {
+				return c, fmt.Errorf("snapshot table %q requires explicit columns and a filter", name)
+			}
+		}
+		for name, columns := range c.Snapshot.PolicyTables {
+			if _, exists := c.Tables[name]; exists || len(columns) == 0 {
+				return c, fmt.Errorf("snapshot policy table %q requires explicit columns and must not overlap output tables", name)
+			}
+		}
+	}
 	return c, nil
 }
 
@@ -64,7 +83,16 @@ func Register(app core.App, configPath string) {
 		if err != nil || !auth.IsAuth() {
 			return fmt.Errorf("authCollection must be an existing auth collection")
 		}
-		for name := range cfg.Tables {
+		validatedTables := make(map[string][]string, len(cfg.Tables))
+		for name, columns := range cfg.Tables {
+			validatedTables[name] = columns
+		}
+		if cfg.Snapshot != nil {
+			for name, columns := range cfg.Snapshot.PolicyTables {
+				validatedTables[name] = columns
+			}
+		}
+		for name := range validatedTables {
 			coll, err := app.FindCollectionByNameOrId(name)
 			if err != nil || coll.Name != name || !coll.IsBase() || coll.System || strings.HasPrefix(name, "_") {
 				return fmt.Errorf("SQL table %q must be a non-system base collection", name)
@@ -73,7 +101,7 @@ func Register(app core.App, configPath string) {
 				if !field.GetHidden() {
 					continue
 				}
-				columns := cfg.Tables[name]
+				columns := validatedTables[name]
 				if len(columns) == 0 {
 					return fmt.Errorf("SQL table %q has hidden fields; configure explicit public columns", name)
 				}
@@ -84,17 +112,41 @@ func Register(app core.App, configPath string) {
 				}
 			}
 		}
-		engine, err := sqlread.New(filepath.Join(app.DataDir(), "data.db"), sqlread.Config{Tables: cfg.Tables, Timeout: time.Duration(cfg.TimeoutMS) * time.Millisecond, MaxRows: cfg.MaxRows, MaxBytes: cfg.MaxBytes})
-		if err != nil {
-			return err
+		queryCfg := sqlread.Config{Tables: cfg.Tables, Timeout: time.Duration(cfg.TimeoutMS) * time.Millisecond, MaxRows: cfg.MaxRows, MaxBytes: cfg.MaxBytes}
+		var schemaFn func(context.Context) ([]sqlread.Table, error)
+		var queryFn func(context.Context, string, string) (sqlread.Result, time.Time, error)
+		var closeFn func() error
+		permissionModel := "shared"
+		if cfg.Snapshot != nil {
+			source, err := sqlread.NewSnapshotSource(filepath.Join(app.DataDir(), "data.db"), queryCfg, *cfg.Snapshot)
+			if err != nil {
+				return err
+			}
+			schemaFn, queryFn, closeFn = source.Schema, source.Query, source.Close
+			permissionModel = "filtered-snapshot"
+		} else {
+			engine, err := sqlread.New(filepath.Join(app.DataDir(), "data.db"), queryCfg)
+			if err != nil {
+				return err
+			}
+			schemaFn, closeFn = engine.Schema, engine.Close
+			queryFn = func(ctx context.Context, _ string, query string) (sqlread.Result, time.Time, error) {
+				result, err := engine.Query(ctx, query)
+				return result, time.Time{}, err
+			}
 		}
-		app.OnTerminate().BindFunc(func(te *core.TerminateEvent) error { defer engine.Close(); return te.Next() })
+		app.OnTerminate().BindFunc(func(te *core.TerminateEvent) error { defer closeFn(); return te.Next() })
 		e.Router.GET("/api/context/schema", func(re *core.RequestEvent) error {
-			schema, err := engine.Schema(re.Request.Context())
+			re.Response.Header().Set("Cache-Control", "no-store")
+			schema, err := schemaFn(re.Request.Context())
 			if err != nil {
 				return re.InternalServerError("Cannot read context schema", nil)
 			}
-			return re.JSON(http.StatusOK, map[string]any{"tables": schema, "limits": map[string]int{"timeoutMs": cfg.TimeoutMS, "maxRows": cfg.MaxRows, "maxBytes": cfg.MaxBytes}})
+			response := map[string]any{"tables": schema, "permissionModel": permissionModel, "limits": map[string]int{"timeoutMs": cfg.TimeoutMS, "maxRows": cfg.MaxRows, "maxBytes": cfg.MaxBytes}}
+			if cfg.Snapshot != nil {
+				response["snapshotLimits"] = map[string]int{"timeoutMs": cfg.Snapshot.TimeoutMS, "maxRows": cfg.Snapshot.MaxRows, "maxBytes": cfg.Snapshot.MaxBytes, "maxConcurrent": cfg.Snapshot.MaxConcurrent}
+			}
+			return re.JSON(http.StatusOK, response)
 		}).Bind(apis.RequireAuth(cfg.AuthCollection))
 		e.Router.POST("/api/context/query", func(re *core.RequestEvent) error {
 			re.Response.Header().Set("Cache-Control", "no-store")
@@ -115,9 +167,15 @@ func Register(app core.App, configPath string) {
 				return re.BadRequestError("format must be json or csv", nil)
 			}
 			started := time.Now()
-			result, err := engine.Query(re.Request.Context(), body.SQL)
+			result, snapshotAt, err := queryFn(re.Request.Context(), re.Auth.Id, body.SQL)
 			logSQL(app, re, body.SQL, body.Format, started, result, err)
 			if err != nil {
+				if errors.Is(err, sqlread.ErrSnapshotLimit) {
+					return re.JSON(http.StatusRequestEntityTooLarge, map[string]string{"message": "Authorized snapshot exceeds configured limits"})
+				}
+				if errors.Is(err, sqlread.ErrSnapshotBuild) {
+					return re.InternalServerError("Cannot build authorized snapshot", nil)
+				}
 				if errors.Is(err, context.DeadlineExceeded) {
 					return re.JSON(http.StatusRequestTimeout, map[string]string{"message": "SQL deadline exceeded"})
 				}
@@ -141,11 +199,16 @@ func Register(app core.App, configPath string) {
 			if len(payload) > cfg.MaxBytes {
 				return re.JSON(http.StatusRequestEntityTooLarge, map[string]string{"message": "Encoded result exceeds maxBytes; select fewer or smaller fields"})
 			}
+			if cfg.Snapshot != nil {
+				re.Response.Header().Add("Access-Control-Expose-Headers", "X-Context-Scope, X-Context-Snapshot-At, X-Context-Truncated")
+				re.Response.Header().Set("X-Context-Scope", "authorized-snapshot")
+				re.Response.Header().Set("X-Context-Snapshot-At", snapshotAt.UTC().Format(time.RFC3339Nano))
+			}
 			re.Response.Header().Set("X-Context-Truncated", fmt.Sprint(result.Truncated))
 			return re.Blob(http.StatusOK, contentType, payload)
 		}).Bind(apis.RequireAuth(cfg.AuthCollection))
 		if err = e.Next(); err != nil {
-			engine.Close()
+			closeFn()
 			return err
 		}
 		return nil
@@ -172,7 +235,11 @@ func logSQL(app core.App, re *core.RequestEvent, sql, format string, started tim
 		"sql", text,
 	}
 	if err != nil {
-		app.Logger().Warn("context sql", append(attrs, "error", err.Error())...)
+		message := err.Error()
+		if errors.Is(err, sqlread.ErrSnapshotBuild) {
+			message = "Cannot build authorized snapshot"
+		}
+		app.Logger().Warn("context sql", append(attrs, "error", message)...)
 		return
 	}
 	app.Logger().Info("context sql", attrs...)

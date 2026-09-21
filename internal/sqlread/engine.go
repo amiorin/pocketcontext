@@ -52,8 +52,9 @@ type Engine struct {
 }
 
 type connector struct {
-	driver *sqlite3.SQLiteDriver
-	dsn    string
+	driver       *sqlite3.SQLiteDriver
+	dsn          string
+	transactions bool
 }
 
 func (c connector) Connect(context.Context) (driver.Conn, error) {
@@ -61,17 +62,25 @@ func (c connector) Connect(context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return roConn{conn.(*sqlite3.SQLiteConn)}, nil
+	return roConn{c: conn.(*sqlite3.SQLiteConn), transactions: c.transactions}, nil
 }
 func (c connector) Driver() driver.Driver { return c.driver }
 
 // roConn exposes only prepare, so database/sql cannot bypass the read-only
 // check. The check runs on the prepared statement itself, before any step.
-type roConn struct{ c *sqlite3.SQLiteConn }
+type roConn struct {
+	c            *sqlite3.SQLiteConn
+	transactions bool
+}
 
 func (r roConn) Close() error                   { return r.c.Close() }
 func (r roConn) Ping(ctx context.Context) error { return r.c.Ping(ctx) }
-func (r roConn) Begin() (driver.Tx, error)      { return nil, errors.New("transactions are not supported") }
+func (r roConn) Begin() (driver.Tx, error) {
+	if r.transactions {
+		return r.c.Begin()
+	}
+	return nil, errors.New("transactions are not supported")
+}
 func (r roConn) Prepare(query string) (driver.Stmt, error) {
 	return r.PrepareContext(context.Background(), query)
 }
@@ -90,7 +99,9 @@ func (r roConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, 
 // New opens an independent read-only connection. Tables must be ordinary tables;
 // views, virtual tables and internal names are rejected. An empty column list
 // exposes all current columns. Restart after changing the exposed schema.
-func New(path string, cfg Config) (*Engine, error) {
+func New(path string, cfg Config) (*Engine, error) { return newEngine(path, cfg, false) }
+
+func newEngine(path string, cfg Config, transactions bool) (*Engine, error) {
 	if len(cfg.Tables) == 0 {
 		return nil, errors.New("SQL read table allowlist is empty")
 	}
@@ -185,6 +196,10 @@ func New(path string, cfg Config) (*Engine, error) {
 		c.SetLimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
 		c.RegisterAuthorizer(func(op int, a, b, db string) int {
 			switch op {
+			case sqlite3.SQLITE_TRANSACTION:
+				if transactions {
+					return sqlite3.SQLITE_OK
+				}
 			case sqlite3.SQLITE_SELECT, 33:
 				return sqlite3.SQLITE_OK // SQLITE_RECURSIVE
 			case sqlite3.SQLITE_READ:
@@ -202,7 +217,7 @@ func New(path string, cfg Config) (*Engine, error) {
 		})
 		return nil
 	}}
-	e.db = sql.OpenDB(connector{driver: d, dsn: u.String()})
+	e.db = sql.OpenDB(connector{driver: d, dsn: u.String(), transactions: transactions})
 	e.db.SetMaxOpenConns(4)
 	e.db.SetMaxIdleConns(4)
 	if err = e.db.PingContext(ctx); err != nil {
